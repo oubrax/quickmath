@@ -1,13 +1,15 @@
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
 
-const isDev = !app.isPackaged;
+const devUrl = process.env.ELECTRON_START_URL;
+const isDev = !app.isPackaged && !!devUrl;
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 560,
     height: 360,
     backgroundColor: "#0b1020",
+    alwaysOnTop: true,
     frame: true,
     resizable: true,
     minimizable: false,
@@ -24,7 +26,6 @@ function createWindow() {
   win.setMenuBarVisibility(false);
 
   if (isDev) {
-    const devUrl = process.env.ELECTRON_START_URL || "http://localhost:5173";
     win.loadURL(devUrl);
     win.webContents.openDevTools({ mode: "detach" });
   } else {
