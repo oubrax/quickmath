@@ -52,12 +52,41 @@ function bestExactLatex(expr) {
   return unique[0] ?? "";
 }
 
+function isSymbolNamed(node, name) {
+  return (
+    (node?.operator === "Symbol" && node?.symbol === name) ||
+    (typeof node?.symbol === "string" && node.symbol === name)
+  );
+}
+
+function isSingleArgCallOfX(node) {
+  return (
+    node?.operator &&
+    node.operator !== "Symbol" &&
+    node.nops === 1 &&
+    isSymbolNamed(node.op1, "x")
+  );
+}
+
 export function evaluateLatex({ ce, latex, outputMode, solveFor }) {
   const trimmed = latex.trim();
   if (!trimmed) return null;
 
   const expr = ce.parse(trimmed);
   if (expr.operator === "Equal") {
+    // Treat y=f(x) and f(x)=... as a definition-like display, not as an equation to solve.
+    // This avoids errors like "Can't solve for multiple variables: y, x" when graphing.
+    const lhs = expr.op1;
+    const rhs = expr.op2;
+    const rhsUnknowns = rhs?.unknowns ?? [];
+    const rhsOnlyUsesX = rhsUnknowns.every((u) => u === "x");
+    if (rhsOnlyUsesX && (isSymbolNamed(lhs, "y") || isSingleArgCallOfX(lhs))) {
+      const rhsLatex =
+        outputMode === "numeric" ? bestExactLatex(rhs.N()) : bestExactLatex(rhs);
+      const lhsLatex = toLatexOrString(lhs);
+      return { inputLatex: trimmed, resultLatex: `${lhsLatex}=${rhsLatex}` };
+    }
+
     const vars = expr.unknowns ?? [];
     if (vars.length === 0) {
       const evaluated = outputMode === "numeric" ? expr.N() : expr.evaluate();

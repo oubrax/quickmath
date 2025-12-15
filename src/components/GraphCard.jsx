@@ -3,10 +3,91 @@ import { buildTicks, clamp, roundForDisplay } from "@/utils/number";
 
 export default function GraphCard({ graphView, setGraphView, graphInfo, graphData }) {
   const [graphHover, setGraphHover] = useState(null);
+  const [fieldImageUrl, setFieldImageUrl] = useState(null);
   const graphDragRef = useRef(null);
   const graphSvgRef = useRef(null);
   const hoverSnapRef = useRef(null);
   const hoverSmoothRef = useRef(null);
+
+  const VIEWBOX_W = 600;
+  const VIEWBOX_H = 260;
+  const ASPECT = VIEWBOX_H / VIEWBOX_W;
+  const is2D = graphInfo?.ok && (graphInfo.type === "field" || graphInfo.type === "implicit");
+
+  useEffect(() => {
+    if (!is2D) return;
+    setGraphView((v) => {
+      const xSpan = v.xMax - v.xMin;
+      if (!(xSpan > 0)) return v;
+      const targetYSpan = xSpan * ASPECT;
+      const ySpan = v.yMax - v.yMin;
+      if (!(ySpan > 0)) return v;
+
+      const relDiff = Math.abs(targetYSpan - ySpan) / Math.max(1e-12, ySpan);
+      if (relDiff < 1e-6) return v;
+
+      const yMid = (v.yMin + v.yMax) / 2;
+      return {
+        ...v,
+        yMin: yMid - targetYSpan / 2,
+        yMax: yMid + targetYSpan / 2,
+      };
+    });
+  }, [ASPECT, is2D, setGraphView, graphView.xMin, graphView.xMax, graphView.yMin, graphView.yMax]);
+
+  useEffect(() => {
+    if (!graphData?.ok || graphData.type !== "field") {
+      setFieldImageUrl(null);
+      return;
+    }
+
+    try {
+      const { gridW, gridH, values, maxAbs } = graphData;
+      const canvas = document.createElement("canvas");
+      canvas.width = gridW;
+      canvas.height = gridH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        setFieldImageUrl(null);
+        return;
+      }
+
+      const img = ctx.createImageData(gridW, gridH);
+      const data = img.data;
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        const o = i * 4;
+        if (!(typeof v === "number" && Number.isFinite(v))) {
+          data[o + 3] = 0;
+          continue;
+        }
+
+        const t = clamp(v / maxAbs, -1, 1);
+        const s = Math.sign(t) * Math.pow(Math.abs(t), 0.65);
+
+        let r = 255;
+        let g = 255;
+        let b = 255;
+        if (s >= 0) {
+          g = Math.round(255 * (1 - s));
+          b = Math.round(255 * (1 - s));
+        } else {
+          r = Math.round(255 * (1 + s));
+          g = Math.round(255 * (1 + s));
+        }
+
+        data[o + 0] = r;
+        data[o + 1] = g;
+        data[o + 2] = b;
+        data[o + 3] = 255;
+      }
+
+      ctx.putImageData(img, 0, 0);
+      setFieldImageUrl(canvas.toDataURL());
+    } catch {
+      setFieldImageUrl(null);
+    }
+  }, [graphData]);
 
   useEffect(() => {
     const svg = graphSvgRef.current;
@@ -34,7 +115,7 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
         const anchorX = v.xMin + nx * xSpan;
         const anchorY = v.yMax - ny * ySpan;
         const nextXSpan = xSpan * scale;
-        const nextYSpan = ySpan * scale;
+        const nextYSpan = is2D ? nextXSpan * ASPECT : ySpan * scale;
 
         const xMin = anchorX - ((anchorX - v.xMin) / xSpan) * nextXSpan;
         const xMax = xMin + nextXSpan;
@@ -62,7 +143,7 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
         <svg
           className="block w-full h-auto aspect-[600/260] border bg-background"
           ref={graphSvgRef}
-          viewBox="0 0 600 260"
+          viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}
           preserveAspectRatio="none"
           style={{ touchAction: "none" }}
           onPointerLeave={() => {
@@ -102,76 +183,109 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
             const h = rect.height;
             if (w <= 0 || h <= 0) return;
 
-            const x =
-              graphView.xMin +
-              ((e.clientX - rect.left) / w) * (graphView.xMax - graphView.xMin);
-
             const viewYSpan = graphView.yMax - graphView.yMin;
             const viewXSpan = graphView.xMax - graphView.xMin;
+            if (!(viewXSpan > 0 && viewYSpan > 0)) return;
 
-            const px = ((e.clientX - rect.left) / w) * 600;
-            const py = ((e.clientY - rect.top) / h) * 260;
+            const px = ((e.clientX - rect.left) / w) * VIEWBOX_W;
+            const py = ((e.clientY - rect.top) / h) * VIEWBOX_H;
+            if (!Number.isFinite(px) || !Number.isFinite(py)) return;
 
-            const xToPx = (x) => ((x - graphView.xMin) / viewXSpan) * 600;
-            const yToPx = (y) => 260 - ((y - graphView.yMin) / viewYSpan) * 260;
+            const x = graphView.xMin + (px / VIEWBOX_W) * viewXSpan;
+            const y = graphView.yMax - (py / VIEWBOX_H) * viewYSpan;
 
-            const nearestInt = Math.round(x);
-            const snapInPx = 10;
-            const snapOutPx = 16;
-            const currentSnap = hoverSnapRef.current;
-            if (typeof currentSnap === "number" && Number.isFinite(currentSnap)) {
-              const currentSnapPx = xToPx(currentSnap);
-              if (
-                !Number.isFinite(currentSnapPx) ||
-                Math.abs(currentSnapPx - px) > snapOutPx
-              ) {
-                hoverSnapRef.current = null;
-              }
-            } else {
-              const snapPx = xToPx(nearestInt);
-              if (Number.isFinite(snapPx) && Math.abs(snapPx - px) <= snapInPx) {
-                hoverSnapRef.current = nearestInt;
-              }
-            }
+            const isField = graphData?.ok && graphData.type === "field";
+            if (isField) {
+              hoverSnapRef.current = null;
 
-            const snappedX =
-              typeof hoverSnapRef.current === "number" ? hoverSnapRef.current : x;
-
-            let yAtX = NaN;
-            if (graphData?.ok) {
+              let value = NaN;
               try {
-                yAtX = graphData.fn({ x: snappedX });
-                if (!(typeof yAtX === "number" && Number.isFinite(yAtX)))
-                  yAtX = NaN;
+                value = graphData.fn({ x, y });
+                if (!(typeof value === "number" && Number.isFinite(value))) value = NaN;
               } catch {
-                yAtX = NaN;
+                value = NaN;
               }
-            }
 
-            const targetPx =
-              typeof hoverSnapRef.current === "number" ? xToPx(snappedX) : px;
-            const targetPy = Number.isFinite(yAtX) ? yToPx(yAtX) : py;
+              if (!hoverSmoothRef.current) {
+                hoverSmoothRef.current = { px, py };
+              } else {
+                const alpha = 0.35;
+                hoverSmoothRef.current = {
+                  px: hoverSmoothRef.current.px + (px - hoverSmoothRef.current.px) * alpha,
+                  py: hoverSmoothRef.current.py + (py - hoverSmoothRef.current.py) * alpha,
+                };
+              }
 
-            if (!hoverSmoothRef.current) {
-              hoverSmoothRef.current = { px: targetPx, py: targetPy };
+              setGraphHover({
+                px: hoverSmoothRef.current.px,
+                py: hoverSmoothRef.current.py,
+                x,
+                y,
+                value,
+              });
             } else {
-              const alpha = 0.35;
-              hoverSmoothRef.current = {
-                px:
-                  hoverSmoothRef.current.px +
-                  (targetPx - hoverSmoothRef.current.px) * alpha,
-                py:
-                  hoverSmoothRef.current.py +
-                  (targetPy - hoverSmoothRef.current.py) * alpha,
-              };
-            }
+              const xToPx = (x) => ((x - graphView.xMin) / viewXSpan) * VIEWBOX_W;
+              const yToPx = (y) =>
+                VIEWBOX_H - ((y - graphView.yMin) / viewYSpan) * VIEWBOX_H;
 
-            setGraphHover({
-              px: hoverSmoothRef.current.px,
-              py: hoverSmoothRef.current.py,
-              x: snappedX,
-              yAtX,
-            });
+              const nearestInt = Math.round(x);
+              const snapInPx = 10;
+              const snapOutPx = 16;
+              const currentSnap = hoverSnapRef.current;
+              if (typeof currentSnap === "number" && Number.isFinite(currentSnap)) {
+                const currentSnapPx = xToPx(currentSnap);
+                if (
+                  !Number.isFinite(currentSnapPx) ||
+                  Math.abs(currentSnapPx - px) > snapOutPx
+                ) {
+                  hoverSnapRef.current = null;
+                }
+              } else {
+                const snapPx = xToPx(nearestInt);
+                if (Number.isFinite(snapPx) && Math.abs(snapPx - px) <= snapInPx) {
+                  hoverSnapRef.current = nearestInt;
+                }
+              }
+
+              const snappedX =
+                typeof hoverSnapRef.current === "number" ? hoverSnapRef.current : x;
+
+              let yAtX = NaN;
+              if (graphData?.ok) {
+                try {
+                  yAtX = graphData.fn({ x: snappedX });
+                  if (!(typeof yAtX === "number" && Number.isFinite(yAtX)))
+                    yAtX = NaN;
+                } catch {
+                  yAtX = NaN;
+                }
+              }
+
+              const targetPx =
+                typeof hoverSnapRef.current === "number" ? xToPx(snappedX) : px;
+              const targetPy = Number.isFinite(yAtX) ? yToPx(yAtX) : py;
+
+              if (!hoverSmoothRef.current) {
+                hoverSmoothRef.current = { px: targetPx, py: targetPy };
+              } else {
+                const alpha = 0.35;
+                hoverSmoothRef.current = {
+                  px:
+                    hoverSmoothRef.current.px +
+                    (targetPx - hoverSmoothRef.current.px) * alpha,
+                  py:
+                    hoverSmoothRef.current.py +
+                    (targetPy - hoverSmoothRef.current.py) * alpha,
+                };
+              }
+
+              setGraphHover({
+                px: hoverSmoothRef.current.px,
+                py: hoverSmoothRef.current.py,
+                x: snappedX,
+                yAtX,
+              });
+            }
 
             const drag = graphDragRef.current;
             if (!drag || drag.pointerId !== e.pointerId) return;
@@ -190,10 +304,10 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
             });
           }}
         >
-          <rect x="0" y="0" width="600" height="260" fill="transparent" />
+          <rect x="0" y="0" width={VIEWBOX_W} height={VIEWBOX_H} fill="transparent" />
           {(() => {
-            const w = 600;
-            const h = 260;
+            const w = VIEWBOX_W;
+            const h = VIEWBOX_H;
             const { xMin, xMax, yMin, yMax } = graphView;
             const xToPx = (x) => ((x - xMin) / (xMax - xMin)) * w;
             const yToPx = (y) => h - ((y - yMin) / (yMax - yMin)) * h;
@@ -205,7 +319,7 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
             const zeroY = yMin <= 0 && 0 <= yMax ? yToPx(0) : null;
 
             let d = "";
-            if (graphData?.ok) {
+            if (graphData?.ok && graphData.type === "line") {
               const { xs, ys } = graphData;
               const ySpan = Math.max(1e-9, yMax - yMin);
               const jump = ySpan * 0.35;
@@ -282,13 +396,25 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
             }
 
             const hover = graphHover;
+            const isLine = graphData?.ok && graphData.type === "line";
             const hoverPoint =
-              hover?.x != null && Number.isFinite(hover?.yAtX)
+              isLine && hover?.x != null && Number.isFinite(hover?.yAtX)
                 ? { px: xToPx(hover.x), py: yToPx(hover.yAtX) }
                 : null;
 
             return (
               <>
+                {graphData?.ok && graphData.type === "field" && fieldImageUrl ? (
+                  <image
+                    href={fieldImageUrl}
+                    x="0"
+                    y="0"
+                    width={w}
+                    height={h}
+                    preserveAspectRatio="none"
+                    opacity="0.95"
+                  />
+                ) : null}
                 {xTicks.map((t) => (
                   <line
                     key={`gx-${t}`}
@@ -388,6 +514,31 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
                   />
                 ) : null}
 
+                {graphData?.ok && graphData.type === "implicit" ? (
+                  <path
+                    d={(() => {
+                      const segs = graphData.segments ?? [];
+                      let dd = "";
+                      for (let i = 0; i < segs.length; i++) {
+                        const a = segs[i][0];
+                        const b = segs[i][1];
+                        const ax = xMin + ((a.x / (graphData.gridW - 1)) * (xMax - xMin));
+                        const ay = yMax - ((a.y / (graphData.gridH - 1)) * (yMax - yMin));
+                        const bx = xMin + ((b.x / (graphData.gridW - 1)) * (xMax - xMin));
+                        const by = yMax - ((b.y / (graphData.gridH - 1)) * (yMax - yMin));
+                        dd += `M ${xToPx(ax)} ${yToPx(ay)} L ${xToPx(bx)} ${yToPx(by)} `;
+                      }
+                      return dd;
+                    })()}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    opacity="0.9"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                ) : null}
+
                 {graphHover ? (
                   <>
                     <line
@@ -416,6 +567,14 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
                     fill="currentColor"
                     opacity="0.9"
                   />
+                ) : graphHover && graphData?.ok && graphData.type === "field" ? (
+                  <circle
+                    cx={clamp(graphHover.px, 0, w)}
+                    cy={clamp(graphHover.py, 0, h)}
+                    r="3"
+                    fill="currentColor"
+                    opacity="0.6"
+                  />
                 ) : null}
               </>
             );
@@ -424,13 +583,28 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
 
         {graphHover ? (
           <div className="pointer-events-none absolute left-2 top-2 border bg-background px-2 py-1 text-[11px] text-foreground">
-            <div>x: {roundForDisplay(graphHover.x)}</div>
-            <div>
-              y:{" "}
-              {Number.isFinite(graphHover.yAtX)
-                ? roundForDisplay(graphHover.yAtX)
-                : "—"}
-            </div>
+            {"value" in graphHover ? (
+              <>
+                <div>x: {roundForDisplay(graphHover.x)}</div>
+                <div>y: {roundForDisplay(graphHover.y)}</div>
+                <div>
+                  f:{" "}
+                  {Number.isFinite(graphHover.value)
+                    ? roundForDisplay(graphHover.value)
+                    : "—"}
+                </div>
+              </>
+            ) : (
+              <>
+                <div>x: {roundForDisplay(graphHover.x)}</div>
+                <div>
+                  y:{" "}
+                  {Number.isFinite(graphHover.yAtX)
+                    ? roundForDisplay(graphHover.yAtX)
+                    : "—"}
+                </div>
+              </>
+            )}
           </div>
         ) : null}
       </div>

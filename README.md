@@ -10,7 +10,9 @@ A scientific calculator built with Electron, React, Vite, and Tailwind CSS, for 
 - LaTeX math input via MathLive (supports most common functions/operators supported by the Compute Engine).
 - Exact and numeric output modes.
 - Equation solving (single-variable). Falls back to numeric root finding when symbolic solving can’t find solutions.
-- Quick graphing
+- Quick graphing (1D `y=f(x)` and 2D scalar fields `f(x,y)`)
+  - Example 2D: `cos(sqrt(x^2+y^2) - 0.04*pi) / sqrt(x^2+y^2)`
+  - Example equation: `x^2+y^2=1`
 - Result + history: recent inputs/outputs are saved locally; click a history item to reuse it.
 - One-click copy buttons for input/output LaTeX in the input, result, and history panels.
 
