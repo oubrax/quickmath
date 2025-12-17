@@ -251,7 +251,26 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
                 typeof hoverSnapRef.current === "number" ? hoverSnapRef.current : x;
 
               let yAtX = NaN;
-              if (graphData?.ok) {
+              let label = null;
+              if (graphData?.ok && graphData.type === "multi-line") {
+                let best = null;
+                for (const s of graphData.series ?? []) {
+                  let yv = NaN;
+                  try {
+                    yv = s.fn({ x: snappedX });
+                    if (!(typeof yv === "number" && Number.isFinite(yv))) yv = NaN;
+                  } catch {
+                    yv = NaN;
+                  }
+                  if (!Number.isFinite(yv)) continue;
+                  const dist = Math.abs(yToPx(yv) - py);
+                  if (!best || dist < best.dist) best = { dist, y: yv, label: s.label };
+                }
+                if (best) {
+                  yAtX = best.y;
+                  label = best.label;
+                }
+              } else if (graphData?.ok) {
                 try {
                   yAtX = graphData.fn({ x: snappedX });
                   if (!(typeof yAtX === "number" && Number.isFinite(yAtX)))
@@ -284,6 +303,7 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
                 py: hoverSmoothRef.current.py,
                 x: snappedX,
                 yAtX,
+                label,
               });
             }
 
@@ -318,24 +338,11 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
             const zeroX = xMin <= 0 && 0 <= xMax ? xToPx(0) : null;
             const zeroY = yMin <= 0 && 0 <= yMax ? yToPx(0) : null;
 
-            let d = "";
-            if (graphData?.ok && graphData.type === "line") {
-              const { xs, ys } = graphData;
-              const ySpan = Math.max(1e-9, yMax - yMin);
-              const jump = ySpan * 0.35;
-              const safeEval = (x) => {
-                try {
-                  const y = graphData.fn({ x });
-                  return typeof y === "number" && Number.isFinite(y) ? y : NaN;
-                } catch {
-                  try {
-                    const y = graphData.fn(x);
-                    return typeof y === "number" && Number.isFinite(y) ? y : NaN;
-                  } catch {
-                    return NaN;
-                  }
-                }
-              };
+            const ySpan = Math.max(1e-9, yMax - yMin);
+            const jump = ySpan * 0.35;
+
+            const buildLinePath = ({ xs, ys, safeEval }) => {
+              let d = "";
               let started = false;
               let prevX = null;
               let prevY = null;
@@ -393,10 +400,57 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
                   d += `L ${px} ${py} `;
                 }
               }
+              return d;
+            };
+
+            const linePaths = [];
+            if (graphData?.ok && graphData.type === "line") {
+              const safeEval = (x) => {
+                try {
+                  const y = graphData.fn({ x });
+                  return typeof y === "number" && Number.isFinite(y) ? y : NaN;
+                } catch {
+                  try {
+                    const y = graphData.fn(x);
+                    return typeof y === "number" && Number.isFinite(y) ? y : NaN;
+                  } catch {
+                    return NaN;
+                  }
+                }
+              };
+              const d = buildLinePath({ xs: graphData.xs, ys: graphData.ys, safeEval });
+              if (d) linePaths.push({ d, label: graphInfo?.label ?? "y", color: "currentColor" });
+            } else if (graphData?.ok && graphData.type === "multi-line") {
+              const palette = [
+                "var(--chart-1)",
+                "var(--chart-2)",
+                "var(--chart-3)",
+                "var(--chart-4)",
+                "var(--chart-5)",
+              ];
+              const xs = graphData.xs;
+              for (let i = 0; i < (graphData.series ?? []).length; i++) {
+                const s = graphData.series[i];
+                const safeEval = (x) => {
+                  try {
+                    const y = s.fn({ x });
+                    return typeof y === "number" && Number.isFinite(y) ? y : NaN;
+                  } catch {
+                    try {
+                      const y = s.fn(x);
+                      return typeof y === "number" && Number.isFinite(y) ? y : NaN;
+                    } catch {
+                      return NaN;
+                    }
+                  }
+                };
+                const d = buildLinePath({ xs, ys: s.ys, safeEval });
+                if (d) linePaths.push({ d, label: s.label, color: palette[i % palette.length] });
+              }
             }
 
             const hover = graphHover;
-            const isLine = graphData?.ok && graphData.type === "line";
+            const isLine = graphData?.ok && (graphData.type === "line" || graphData.type === "multi-line");
             const hoverPoint =
               isLine && hover?.x != null && Number.isFinite(hover?.yAtX)
                 ? { px: xToPx(hover.x), py: yToPx(hover.yAtX) }
@@ -504,15 +558,16 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
                   </g>
                 ))}
 
-                {d ? (
+                {linePaths.map((p, idx) => (
                   <path
-                    d={d}
+                    key={`${p.label}-${idx}`}
+                    d={p.d}
                     fill="none"
-                    stroke="currentColor"
+                    stroke={p.color}
                     strokeWidth="2"
-                    opacity="0.85"
+                    opacity="0.9"
                   />
-                ) : null}
+                ))}
 
                 {graphData?.ok && graphData.type === "implicit" ? (
                   <path
@@ -597,6 +652,7 @@ export default function GraphCard({ graphView, setGraphView, graphInfo, graphDat
             ) : (
               <>
                 <div>x: {roundForDisplay(graphHover.x)}</div>
+                {graphHover.label ? <div>{graphHover.label}(x)</div> : null}
                 <div>
                   y:{" "}
                   {Number.isFinite(graphHover.yAtX)

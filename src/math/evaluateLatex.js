@@ -69,8 +69,41 @@ function isSingleArgCallOfX(node) {
 }
 
 export function evaluateLatex({ ce, latex, outputMode, solveFor }) {
-  const trimmed = latex.trim();
+  const trimmed = stripMathDelimiters(latex);
   if (!trimmed) return null;
+
+  const defs = extractMultiFunctionDefinitionsInX(trimmed);
+  if (defs.length > 1) {
+    const lines = [];
+    for (const d of defs) {
+      const rhs = ce.parse(d.rhsLatex);
+      const rhsUnknowns = rhs?.unknowns ?? [];
+      const rhsOnlyUsesX = rhsUnknowns.every((u) => u === "x");
+      if (!rhsOnlyUsesX) continue;
+      const rhsLatex =
+        outputMode === "numeric" ? bestExactLatex(rhs.N()) : bestExactLatex(rhs);
+      lines.push(`${d.name}(x)=${rhsLatex}`);
+    }
+    if (lines.length > 0) {
+      const resultLatex = `\\begin{aligned}${lines.join("\\\\")}\\end{aligned}`;
+      return { inputLatex: trimmed, resultLatex };
+    }
+  }
+
+  const fnDef = extractSingleVarFunctionDefinitionInX(trimmed);
+  if (fnDef) {
+    const rhs = ce.parse(fnDef.rhsLatex);
+    const rhsUnknowns = rhs?.unknowns ?? [];
+    const rhsOnlyUsesX = rhsUnknowns.every((u) => u === "x");
+    if (rhsOnlyUsesX) {
+      const rhsLatex =
+        outputMode === "numeric" ? bestExactLatex(rhs.N()) : bestExactLatex(rhs);
+      return {
+        inputLatex: trimmed,
+        resultLatex: `${fnDef.name}(x)=${rhsLatex}`,
+      };
+    }
+  }
 
   const expr = ce.parse(trimmed);
   if (expr.operator === "Equal") {
@@ -138,4 +171,56 @@ export function evaluateLatex({ ce, latex, outputMode, solveFor }) {
     resultLatex:
       outputMode === "numeric" ? String(result) : bestExactLatex(result),
   };
+}
+
+function extractSingleVarFunctionDefinitionInX(input) {
+  const s = String(input ?? "").trim();
+  const ws = String.raw`(?:\s|\\,|\\;|\\:|\\!)*`;
+  const m = s.match(
+    new RegExp(
+      `^([a-zA-Z])${ws}(?:\\\\left)?\\(${ws}x${ws}(?:\\\\right)?\\)${ws}=${ws}(.+)$`,
+      "s",
+    ),
+  );
+  if (!m) return null;
+  const name = m[1];
+  const rhsLatex = String(m[2] ?? "").trim();
+  if (!rhsLatex) return null;
+  return { name, rhsLatex };
+}
+
+function extractMultiFunctionDefinitionsInX(input) {
+  const parts = splitTopLevelStatementsInMath(input);
+  if (parts.length <= 1) return [];
+  const defs = [];
+  for (const part of parts) {
+    const def = extractSingleVarFunctionDefinitionInX(part);
+    if (!def) return [];
+    defs.push(def);
+  }
+  return defs;
+}
+
+function splitTopLevelStatementsInMath(input) {
+  return String(input ?? "")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function stripMathDelimiters(input) {
+  let s = String(input ?? "").trim();
+  if (!s) return "";
+
+  if (s.startsWith("$$") && s.endsWith("$$") && s.length >= 4) {
+    s = s.slice(2, -2).trim();
+  } else if (s.startsWith("$") && s.endsWith("$") && s.length >= 2) {
+    s = s.slice(1, -1).trim();
+  } else if (s.startsWith("\\[") && s.endsWith("\\]") && s.length >= 4) {
+    s = s.slice(2, -2).trim();
+  } else if (s.startsWith("\\(") && s.endsWith("\\)") && s.length >= 4) {
+    s = s.slice(2, -2).trim();
+  }
+
+  return s;
 }

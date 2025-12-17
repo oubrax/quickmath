@@ -12,6 +12,44 @@ export function getGraphData({ showGraph, graphView, graphInfo }) {
   if (!graphInfo.ok)
     return { ok: false, reason: graphInfo.reason, xMin, xMax, yMin, yMax };
 
+  if (graphInfo.type === "multi-line") {
+    const sampleCount = 720;
+    const xs = [];
+    for (let i = 0; i < sampleCount; i++) {
+      const t = i / (sampleCount - 1);
+      xs.push(xMin + (xMax - xMin) * t);
+    }
+
+    const series = graphInfo.series.map((s) => {
+      let fn = null;
+      try {
+        fn = s.expr.compile({ fallback: false });
+      } catch {
+        fn = s.expr.compile();
+      }
+
+      const ys = [];
+      for (let i = 0; i < xs.length; i++) {
+        const x = xs[i];
+        let y = NaN;
+        try {
+          y = fn({ x });
+        } catch {
+          try {
+            y = fn(x);
+          } catch {
+            y = NaN;
+          }
+        }
+        ys.push(typeof y === "number" ? y : NaN);
+      }
+
+      return { label: s.label, fn, ys };
+    });
+
+    return { ok: true, type: "multi-line", xs, series, xMin, xMax, yMin, yMax };
+  }
+
   let fn = null;
   let expr = graphInfo.expr ?? null;
   if (graphInfo.type === "implicit") {
